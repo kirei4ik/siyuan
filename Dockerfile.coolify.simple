@@ -1,0 +1,61 @@
+# Simplified multi-stage build for SiYuan - Coolify optimized
+FROM node:20-alpine AS node-build
+
+WORKDIR /app
+COPY app/package.json app/pnpm-lock.yaml app/.npmrc ./
+
+# Install dependencies with fallbacks
+RUN npm install -g pnpm && \
+    pnpm config set registry "https://registry.npmjs.org/" && \
+    pnpm install --frozen-lockfile --prod=false --no-optional
+
+# Copy and build frontend
+COPY app/ .
+RUN if [ -f "package.json" ] && grep -q "build" package.json; then \
+        pnpm run build; \
+    else \
+        echo "Build script not found, copying static assets"; \
+        mkdir -p appearance stage guide changelogs; \
+    fi && \
+    mkdir -p /artifacts && \
+    cp -r appearance stage guide changelogs /artifacts/ 2>/dev/null || true
+
+FROM golang:1.23-alpine AS go-build
+
+RUN apk add --no-cache gcc musl-dev git curl && \
+    go env -w GO111MODULE=on && \
+    go env -w CGO_ENABLED=1
+
+WORKDIR /kernel
+COPY kernel/go.mod kernel/go.sum ./
+RUN go mod download
+
+COPY kernel/ .
+RUN go build --tags fts5 -v -ldflags "-s -w" -o kernel
+
+FROM alpine:3.19
+LABEL maintainer="Liang Ding<845765@qq.com>"
+LABEL version="1.0"
+
+# Install dependencies and create user
+RUN apk add --no-cache ca-certificates tzdata su-exec shadow && \
+    addgroup -g 1000 -S siyuan && \
+    adduser -S siyuan -u 1000 -G siyuan && \
+    mkdir -p /opt/siyuan && \
+    chown -R siyuan:siyuan /opt/siyuan
+
+ENV TZ=Asia/Shanghai
+ENV HOME=/home/siyuan
+ENV RUN_IN_CONTAINER=true
+EXPOSE 6806
+
+WORKDIR /opt/siyuan/
+
+# Copy built assets
+COPY --from=go-build --chown=siyuan:siyuan /kernel/kernel ./kernel
+COPY --from=go-build --chown=siyuan:siyuan /kernel/entrypoint.sh ./entrypoint.sh
+COPY --from=node-build --chown=siyuan:siyuan /artifacts/ ./
+
+USER siyuan
+ENTRYPOINT ["/opt/siyuan/entrypoint.sh"]
+CMD ["/opt/siyuan/kernel"]

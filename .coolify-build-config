@@ -1,0 +1,23 @@
+# Coolify Build Configuration for SiYuan
+#
+# This file provides build instructions for Coolify
+#
+
+# Build using the custom Dockerfile
+DOCKERFILE_PATH=Dockerfile.coolify
+
+# Set build args if needed
+BUILD_ARGS=(
+  "NPM_REGISTRY=https://registry.npmjs.org/"
+)
+
+# Environment variables
+ENV=(
+  "TZ=Asia/Shanghai"
+  "NODE_ENV=production"
+  "GO111MODULE=on"
+  "CGO_ENABLED=1"
+)
+
+# Expose port
+EXPOSE_PORT=6806
