@@ -1,0 +1,67 @@
+# Multi-stage build for SiYuan - Full debug version
+FROM node:20-alpine AS node-build
+
+WORKDIR /app
+COPY app/package.json app/pnpm-lock.yaml app/.npmrc ./
+
+# Install dependencies
+RUN npm install -g pnpm && \
+    pnpm install --frozen-lockfile --prod=false
+
+# Copy remaining app files and build
+COPY app/ .
+RUN pnpm run build && \
+    mkdir -p /artifacts && \
+    mv appearance stage guide changelogs /artifacts/ 2>/dev/null || true
+
+FROM golang:1.23-alpine AS go-build
+
+RUN apk add --no-cache gcc musl-dev git libc6-compat && \
+    go env -w GO111MODULE=on && \
+    go env -w CGO_ENABLED=1
+
+WORKDIR /kernel
+COPY kernel/go.mod kernel/go.sum ./
+RUN go mod download
+
+COPY kernel/ .
+RUN go build --tags fts5 -v -ldflags "-s -w -extldflags -static" -o kernel
+
+FROM alpine:3.19
+LABEL maintainer="Liang Ding<845765@qq.com>"
+LABEL version="1.0"
+
+# Install dependencies and create user
+RUN apk add --no-cache ca-certificates tzdata su-exec shadow procps && \
+    addgroup -g 1000 -S siyuan && \
+    adduser -S siyuan -u 1000 -G siyuan
+
+ENV TZ=Asia/Shanghai
+ENV HOME=/home/siyuan
+ENV RUN_IN_CONTAINER=true
+EXPOSE 6806
+
+WORKDIR /opt/siyuan/
+
+# Copy built binaries from previous stages
+COPY --from=go-build --chown=siyuan:siyuan /kernel/kernel ./kernel
+
+# Copy frontend assets
+COPY --from=node-build --chown=siyuan:siyuan /artifacts/ ./
+
+# Copy the debug entrypoint script
+COPY kernel/entrypoint.debug.sh /opt/siyuan/entrypoint.sh
+RUN chmod +x /opt/siyuan/entrypoint.sh
+
+# Create default workspace directory with proper permissions
+RUN mkdir -p /siyuan/workspace && \
+    chown -R siyuan:siyuan /siyuan/workspace && \
+    chmod 755 /siyuan/workspace
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD pgrep -f "kernel.*--workspace" || exit 1
+
+USER siyuan
+ENTRYPOINT ["/opt/siyuan/entrypoint.sh"]
+CMD ["/opt/siyuan/kernel", "--workspace=/siyuan/workspace"]
